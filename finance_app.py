@@ -128,7 +128,7 @@ manual_ticker = st.sidebar.text_input("Veya Manuel Girin (Örn: AAPL):")
 selected_ticker = manual_ticker.upper() if manual_ticker else search_ticker
 
 # ---------------------------
-# YENİ: PERİYOT SEÇİCİ
+# PERİYOT SEÇİCİ
 # ---------------------------
 st.sidebar.markdown("### Analiz Periyodu")
 intervals = {
@@ -144,7 +144,7 @@ intervals = {
 period_selection = st.sidebar.selectbox("Zaman Dilimi Seçin:", list(intervals.keys()), index=0)
 selected_params = intervals[period_selection]
 
-# 3. Veri Çekme Fonksiyonu (GÜNCELLENDİ)
+# 3. Veri Çekme Fonksiyonu
 @st.cache_data(ttl=15)
 def get_data(ticker, period, interval):
     try:
@@ -163,12 +163,56 @@ def get_data(ticker, period, interval):
     except Exception as e:
         return None
 
-# Veriyi Yükle
-df = get_data(selected_ticker, selected_params["period"], selected_params["interval"])
+# PİYASA TARAMASI (BATCH DOWNLOAD)
+@st.cache_data(ttl=300) # 5 dk cache
+def get_market_trends():
+    try:
+        # We fetch 5 days to be safe against weekends/holidays
+        tickers_str = " ".join(symbol_list)
+        df_batch = yf.download(tickers_str, period="5d", group_by='ticker', progress=False)
+        
+        results = []
+        
+        for ticker in symbol_list:
+            try:
+                # Access data for this ticker safely
+                if isinstance(df_batch.columns, pd.MultiIndex):
+                    data = df_batch[ticker]
+                else:
+                    # Single ticker or flat structure fallback
+                    data = df_batch if ticker == list(df_batch.columns)[0] else None
+                
+                if data is None or data.empty:
+                    continue
+                    
+                # Drop NA and verify we have enough data
+                data = data.dropna(subset=['Close'])
+                if len(data) < 2:
+                    continue
+                
+                last_close = data['Close'].iloc[-1]
+                prev_close = data['Close'].iloc[-2]
+                volume = data['Volume'].iloc[-1]
+                
+                pct_change = ((last_close - prev_close) / prev_close) * 100
+                
+                results.append({
+                    "Symbol": ticker,
+                    "Price": last_close,
+                    "Change %": pct_change,
+                    "Volume": volume
+                })
+            except Exception:
+                continue
+                
+        results_df = pd.DataFrame(results)
+        return results_df
+            
+    except Exception as e:
+        return pd.DataFrame() # Return empty if fails
 
-if df is None or df.empty:
-    st.error(f"⚠️ {selected_ticker} için veri bulunamadı veya sembol hatalı. (Not: Kısa vadeli veriler her hisse için olmayabilir)")
-    st.stop()
+# Veriyi Yükle (Ana Sekmeler İçin)
+df = get_data(selected_ticker, selected_params["period"], selected_params["interval"])
 
 # 4. Teknik Analiz Hesaplamaları
 def calculate_rsi(data, window=14):
@@ -197,212 +241,226 @@ def calculate_cci(data, ndays=20):
     cci = (tp - tp.rolling(ndays).mean()) / (0.015 * tp.rolling(ndays).std()) 
     return cci
 
-df['RSI'] = calculate_rsi(df)
-df['MACD'], df['Signal'] = calculate_macd(df)
-df['BB_Upper'], df['BB_Middle'], df['BB_Lower'] = calculate_bollinger(df)
-df['CCI'] = calculate_cci(df)
-df['SMA20'] = df['Close'].rolling(window=20).mean()
-df['SMA50'] = df['Close'].rolling(window=50).mean()
+# Ana Tablar İçin Veri Varsa İndikatör Hesapla
+if df is not None and not df.empty:
+    df['RSI'] = calculate_rsi(df)
+    df['MACD'], df['Signal'] = calculate_macd(df)
+    df['BB_Upper'], df['BB_Middle'], df['BB_Lower'] = calculate_bollinger(df)
+    df['CCI'] = calculate_cci(df)
+    df['SMA20'] = df['Close'].rolling(window=20).mean()
+    df['SMA50'] = df['Close'].rolling(window=50).mean()
 
 # 5. Arayüz Sekmeleri
-tab1, tab2, tab3 = st.tabs(["📊 Piyasa Özeti & AI", "📈 Teknik İndikatörler", "🎲 Monte Carlo Simülasyonu"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Piyasa Özeti & AI", "📈 Teknik İndikatörler", "🎲 Monte Carlo Simülasyonu", "🔥 Günün Trendleri"])
 
-with tab1:
-    st.subheader(f"{selected_ticker} Piyasa Özeti ({selected_params['mode']} Modu)")
-    
-    # Metrik Kartları
-    last_price = df['Close'].iloc[-1]
-    if isinstance(last_price, pd.Series): last_price = last_price.iloc[0]
+# --- TAB 1, 2, 3 SADECE VERİ VARSA ÇALIŞIR ---
+if df is not None and not df.empty:
+    with tab1:
+        st.subheader(f"{selected_ticker} Piyasa Özeti ({selected_params['mode']} Modu)")
         
-    prev_price = df['Close'].iloc[-2]
-    if isinstance(prev_price, pd.Series): prev_price = prev_price.iloc[0]
-        
-    daily_change = ((last_price - prev_price) / prev_price) * 100
-    
-    col1, col2 = st.columns(2)
-    col1.metric("Güncel Fiyat", f"{last_price:.2f}", f"{daily_change:.2f}%")
-    
-    # Candlestick ve Bollinger Grafiği
-    fig = go.Figure()
-    
-    # Mum Grafiği
-    fig.add_trace(go.Candlestick(x=df.index,
-                open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-                name=selected_ticker))
-    
-    # Bollinger Bantları
-    fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='gray', width=1), name='BB Üst'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['BB_Middle'], line=dict(color='orange', width=1), name='BB Orta'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='gray', width=1), name='BB Alt'))
-
-    fig.update_layout(template='plotly_dark', title=f'{selected_ticker} - {period_selection}', height=600)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # ---------------------------
-    # AKILLI YAPAY ZEKA ANALİST MODÜLÜ
-    # ---------------------------
-    st.markdown("---")
-    st.markdown(f'<div class="ai-analyst-box"><h3>🤖 Yapay Zeka Analiz Raporu</h3>', unsafe_allow_html=True)
-    
-    active_mode = selected_params["mode"]
-    st.markdown(f'<span class="badge">{active_mode} ANALİZİ DEVREDE</span>', unsafe_allow_html=True)
-    
-    # Verileri al
-    current_rsi = df['RSI'].iloc[-1]
-    current_macd = df['MACD'].iloc[-1]
-    current_signal = df['Signal'].iloc[-1]
-    current_sma20 = df['SMA20'].iloc[-1]
-    current_sma50 = df['SMA50'].iloc[-1]
-    current_price = df['Close'].iloc[-1]
-    
-    signals = []
-    score = 0 
-
-    # --- MODA GÖRE YORUM MANTIĞI ---
-    
-    if active_mode == "SCALPER":
-        # Scalper için daha hassas, anlık, tepki odaklı
-        if current_rsi < 30:
-            signals.append("⚡ **SCALP FIRSATI:** RSI 30 altında! Anlık tepki alımı beklenebilir.")
-            score += 3
-        elif current_rsi > 70:
-            signals.append("⚡ **DİKKAT:** RSI 70 üzerinde. Hızlı bir satış gelebilir.")
-            score -= 3
-        else:
-            signals.append(f"⚪ **RSI:** {current_rsi:.1f} ile nötr. İşlem kovalamak için erken.")
+        last_price = df['Close'].iloc[-1]
+        if isinstance(last_price, pd.Series): last_price = last_price.iloc[0]
             
-        if current_macd > current_signal:
-            signals.append("✅ **Momentum:** MACD pozitif, kısa vadeli alımlar destekleniyor.")
-            score += 1
-        else:
-            signals.append("🔻 **Momentum:** MACD negatif, kısa vadeli baskı var.")
-            score -= 1
-
-    elif active_mode == "TRADER" or active_mode == "SWING":
-        # Trader için trend ve kırılımlar önemli
-        if current_price > current_sma20:
-            signals.append("✅ **Trend:** Fiyat 20 periyotluk ortalamanın üzerinde. Yön yukarı.")
-            score += 1
-        else:
-            signals.append("🔻 **Trend:** Fiyat kısa vade ortalamanın altında. Temkinli ol.")
-            score -= 1
+        prev_price = df['Close'].iloc[-2]
+        if isinstance(prev_price, pd.Series): prev_price = prev_price.iloc[0]
             
-        if current_rsi < 30:
-            signals.append("✅ **Dip Avı:** Aşırı satım bölgesindeyiz. Dönüş mumları ara.")
-            score += 2
-        elif current_rsi > 70:
-            signals.append("🔻 **Kar Realizasyonu:** Fiyat şişmiş, düzeltme riski yüksek.")
-            score -= 2
+        daily_change = ((last_price - prev_price) / prev_price) * 100
+        
+        col1, col2 = st.columns(2)
+        col1.metric("Güncel Fiyat", f"{last_price:.2f}", f"{daily_change:.2f}%")
+        
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(x=df.index,
+                    open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+                    name=selected_ticker))
+        
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='gray', width=1), name='BB Üst'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Middle'], line=dict(color='orange', width=1), name='BB Orta'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='gray', width=1), name='BB Alt'))
 
-    elif active_mode == "YATIRIMCI":
-        # Yatırımcı için büyük resim (Golden Cross vb)
-        if current_sma20 > current_sma50:
-            signals.append("✅ **Altın Vuruş:** Golden Cross aktif (Kısa vade ortalama, uzun vadeyi yukarı kesti).")
-            score += 2
-        elif current_sma20 < current_sma50:
-            signals.append("🔻 **Death Cross:** Düşüş trendi baskın (Death Cross). Acele etme.")
-            score -= 2
+        fig.update_layout(template='plotly_dark', title=f'{selected_ticker} - {period_selection}', height=600)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # AI Analist
+        st.markdown("---")
+        st.markdown(f'<div class="ai-analyst-box"><h3>🤖 Yapay Zeka Analiz Raporu</h3>', unsafe_allow_html=True)
+        
+        active_mode = selected_params["mode"]
+        st.markdown(f'<span class="badge">{active_mode} ANALİZİ DEVREDE</span>', unsafe_allow_html=True)
+        
+        current_rsi = df['RSI'].iloc[-1]
+        current_macd = df['MACD'].iloc[-1]
+        current_signal = df['Signal'].iloc[-1]
+        current_sma20 = df['SMA20'].iloc[-1]
+        current_sma50 = df['SMA50'].iloc[-1]
+        current_price = df['Close'].iloc[-1]
+        
+        signals = []
+        score = 0 
+        
+        if active_mode == "SCALPER":
+            if current_rsi < 30:
+                signals.append("⚡ **SCALP FIRSATI:** RSI 30 altında! Anlık tepki alımı beklenebilir.")
+                score += 3
+            elif current_rsi > 70:
+                signals.append("⚡ **DİKKAT:** RSI 70 üzerinde. Hızlı bir satış gelebilir.")
+                score -= 3
+            else:
+                signals.append(f"⚪ **RSI:** {current_rsi:.1f} ile nötr. İşlem kovalamak için erken.")
+                
+            if current_macd > current_signal:
+                signals.append("✅ **Momentum:** MACD pozitif, kısa vadeli alımlar destekleniyor.")
+                score += 1
+            else:
+                signals.append("🔻 **Momentum:** MACD negatif, kısa vadeli baskı var.")
+                score -= 1
+
+        elif active_mode == "TRADER" or active_mode == "SWING":
+            if current_price > current_sma20:
+                signals.append("✅ **Trend:** Fiyat 20 periyotluk ortalamanın üzerinde. Yön yukarı.")
+                score += 1
+            else:
+                signals.append("🔻 **Trend:** Fiyat kısa vade ortalamanın altında. Temkinli ol.")
+                score -= 1
+                
+            if current_rsi < 30:
+                signals.append("✅ **Dip Avı:** Aşırı satım bölgesindeyiz. Dönüş mumları ara.")
+                score += 2
+            elif current_rsi > 70:
+                signals.append("🔻 **Kar Realizasyonu:** Fiyat şişmiş, düzeltme riski yüksek.")
+                score -= 2
+
+        elif active_mode == "YATIRIMCI":
+            if current_sma20 > current_sma50:
+                signals.append("✅ **Altın Vuruş:** Golden Cross aktif (Kısa vade ortalama, uzun vadeyi yukarı kesti).")
+                score += 2
+            elif current_sma20 < current_sma50:
+                signals.append("🔻 **Death Cross:** Düşüş trendi baskın (Death Cross). Acele etme.")
+                score -= 2
+                
+            if current_rsi < 40: 
+                signals.append("✅ **Toplama Bölgesi:** RSI düşük seviyelerde, kademeli alım düşünülebilir.")
+                score += 1
+            elif current_rsi > 80:
+                signals.append("🔻 **Aşırı Prim:** Çok hızlı yükselmiş, uzun vade için pahalı olabilir.")
+                score -= 1
+
+        for signal in signals:
+            st.write(signal)
+
+        decision_text = ""
+        decision_color = ""
+        
+        if score >= 3:
+            decision_text = "GÜÇLÜ AL 🚀"
+            decision_color = "green"
+        elif score >= 1:
+            decision_text = "AL 🟢"
+            decision_color = "lightgreen"
+        elif score <= -3:
+            decision_text = "GÜÇLÜ SAT 🛑"
+            decision_color = "red"
+        elif score <= -1:
+            decision_text = "SAT 🔴"
+            decision_color = "orange"
+        else:
+            decision_text = "NÖTR / BEKLE ⚪"
+            decision_color = "gray"
+
+        st.markdown(f'<div class="ai-decision" style="background-color:{decision_color};">{decision_text}</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with tab2:
+        st.subheader("Teknik İndikatörler")
+        fig_rsi = go.Figure()
+        fig_rsi.add_trace(go.Scatter(x=df.index, y=df['RSI'], name='RSI', line=dict(color='purple')))
+        fig_rsi.add_hline(y=70, line_dash="dash", line_color="red")
+        fig_rsi.add_hline(y=30, line_dash="dash", line_color="green")
+        fig_rsi.update_layout(template='plotly_dark', title='RSI', height=250)
+        st.plotly_chart(fig_rsi, use_container_width=True)
+        
+        fig_macd = go.Figure()
+        fig_macd.add_trace(go.Scatter(x=df.index, y=df['MACD'], name='MACD', line=dict(color='blue')))
+        fig_macd.add_trace(go.Scatter(x=df.index, y=df['Signal'], name='Sinyal', line=dict(color='orange')))
+        fig_macd.update_layout(template='plotly_dark', title='MACD', height=250)
+        st.plotly_chart(fig_macd, use_container_width=True)
+
+        fig_cci = go.Figure()
+        fig_cci.add_trace(go.Scatter(x=df.index, y=df['CCI'], name='CCI', line=dict(color='cyan')))
+        fig_cci.add_hline(y=100, line_dash="dash", line_color="red")
+        fig_cci.add_hline(y=-100, line_dash="dash", line_color="green")
+        fig_cci.update_layout(template='plotly_dark', title='CCI', height=250)
+        st.plotly_chart(fig_cci, use_container_width=True)
+
+    with tab3:
+        st.subheader("Monte Carlo Simülasyonu (30 Periyot)")
+        days = 30
+        simulations = 50
+        last_close = df['Close'].iloc[-1]
+        if isinstance(last_close, pd.Series): last_close = last_close.iloc[0]
+        returns = df['Close'].pct_change().dropna()
+        daily_vol = returns.std()
+        simulation_df = pd.DataFrame()
+        for i in range(simulations):
+            price_series = [last_close]
+            for _ in range(days):
+                price = price_series[-1] * (1 + np.random.normal(0, daily_vol))
+                price_series.append(price)
+            simulation_df[f'Sim_{i}'] = price_series
+        fig_mc = go.Figure()
+        for col in simulation_df.columns:
+            fig_mc.add_trace(go.Scatter(y=simulation_df[col], mode='lines', 
+                                    line=dict(color='#3fb1ce', width=1), opacity=0.2, showlegend=False))
+        mean_path = simulation_df.mean(axis=1)
+        fig_mc.add_trace(go.Scatter(y=mean_path, mode='lines', name='Ortalama Senaryo', 
+                                line=dict(color='white', width=4)))
+        fig_mc.update_layout(template='plotly_dark', title='Simülasyon', xaxis_title='Süre', yaxis_title='Fiyat')
+        st.plotly_chart(fig_mc, use_container_width=True)
+        best_case = simulation_df.iloc[-1].quantile(0.95)
+        worst_case = simulation_df.iloc[-1].quantile(0.05)
+        avg_case = mean_path.iloc[-1]
+        m1, m2, m3 = st.columns(3)
+        m1.metric("En İyi Senaryo (95%)", f"{best_case:.2f}")
+        m2.metric("Ortalama Tahmin", f"{avg_case:.2f}")
+        m3.metric("En Kötü Senaryo (5%)", f"{worst_case:.2f}")
+else:
+    st.info("Veri yükleniyor veya bu sembol için seçilen periyotta veri yok.")
+
+# --- TAB 4: MARKET SCANNER ---
+with tab4:
+    st.subheader("🔥 Günün Piyasa Trendleri")
+    st.markdown("Bu modül, hisse listesindeki tüm sembolleri tarayarak **son kapanışa göre** en çok kazandıran ve kaybettirenleri listeler.")
+    
+    if st.button("🚀 PİYASAYI TARA (Başlat)"):
+        with st.spinner("Piyasa verileri taranıyor... Bu işlem 10-15 saniye sürebilir."):
+            market_df = get_market_trends()
+
+        if not market_df.empty:
+            # 3 Kategoriye Ayır
+            top_gainers = market_df.sort_values(by="Change %", ascending=False).head(10)
+            top_losers = market_df.sort_values(by="Change %", ascending=True).head(10)
+            top_volume = market_df.sort_values(by="Volume", ascending=False).head(10)
             
-        if current_rsi < 40: # Yatırımcı için 30 beklemek zor olabilir, 40 makul dip
-            signals.append("✅ **Toplama Bölgesi:** RSI düşük seviyelerde, kademeli alım düşünülebilir.")
-            score += 1
-        elif current_rsi > 80:
-            signals.append("🔻 **Aşırı Prim:** Çok hızlı yükselmiş, uzun vade için pahalı olabilir.")
-            score -= 1
-
-    # Raporu Yazdır
-    for signal in signals:
-        st.write(signal)
-
-    # Genel Karar
-    decision_text = ""
-    decision_color = ""
-    
-    if score >= 3:
-        decision_text = "GÜÇLÜ AL 🚀"
-        decision_color = "green"
-    elif score >= 1:
-        decision_text = "AL 🟢"
-        decision_color = "lightgreen"
-    elif score <= -3:
-        decision_text = "GÜÇLÜ SAT 🛑"
-        decision_color = "red"
-    elif score <= -1:
-        decision_text = "SAT 🔴"
-        decision_color = "orange"
-    else:
-        decision_text = "NÖTR / BEKLE ⚪"
-        decision_color = "gray"
-
-    st.markdown(f'<div class="ai-decision" style="background-color:{decision_color};">{decision_text}</div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-with tab2:
-    st.subheader("Teknik İndikatörler")
-    
-    # RSI
-    fig_rsi = go.Figure()
-    fig_rsi.add_trace(go.Scatter(x=df.index, y=df['RSI'], name='RSI', line=dict(color='purple')))
-    fig_rsi.add_hline(y=70, line_dash="dash", line_color="red")
-    fig_rsi.add_hline(y=30, line_dash="dash", line_color="green")
-    fig_rsi.update_layout(template='plotly_dark', title='RSI (Göreceli Güç Endeksi)', height=250)
-    st.plotly_chart(fig_rsi, use_container_width=True)
-    
-    # MACD
-    fig_macd = go.Figure()
-    fig_macd.add_trace(go.Scatter(x=df.index, y=df['MACD'], name='MACD', line=dict(color='blue')))
-    fig_macd.add_trace(go.Scatter(x=df.index, y=df['Signal'], name='Sinyal', line=dict(color='orange')))
-    fig_macd.update_layout(template='plotly_dark', title='MACD', height=250)
-    st.plotly_chart(fig_macd, use_container_width=True)
-
-    # CCI
-    fig_cci = go.Figure()
-    fig_cci.add_trace(go.Scatter(x=df.index, y=df['CCI'], name='CCI', line=dict(color='cyan')))
-    fig_cci.add_hline(y=100, line_dash="dash", line_color="red")
-    fig_cci.add_hline(y=-100, line_dash="dash", line_color="green")
-    fig_cci.update_layout(template='plotly_dark', title='CCI (Commodity Channel Index)', height=250)
-    st.plotly_chart(fig_cci, use_container_width=True)
-
-with tab3:
-    st.subheader("Monte Carlo Simülasyonu (30 Periyot)")
-    
-    days = 30
-    simulations = 50
-    
-    last_close = df['Close'].iloc[-1]
-    if isinstance(last_close, pd.Series): last_close = last_close.iloc[0]
-
-    returns = df['Close'].pct_change().dropna()
-    daily_vol = returns.std()
-    
-    simulation_df = pd.DataFrame()
-    
-    for i in range(simulations):
-        price_series = [last_close]
-        for _ in range(days):
-            price = price_series[-1] * (1 + np.random.normal(0, daily_vol))
-            price_series.append(price)
-        simulation_df[f'Sim_{i}'] = price_series
-        
-    fig_mc = go.Figure()
-    for col in simulation_df.columns:
-        fig_mc.add_trace(go.Scatter(y=simulation_df[col], mode='lines', 
-                                  line=dict(color='#3fb1ce', width=1), opacity=0.2, showlegend=False))
-        
-    mean_path = simulation_df.mean(axis=1)
-    fig_mc.add_trace(go.Scatter(y=mean_path, mode='lines', name='Ortalama Senaryo', 
-                              line=dict(color='white', width=4)))
-    
-    fig_mc.update_layout(template='plotly_dark', title='Gelecek 30 Periyot Tahmini', 
-                       xaxis_title='Süre', yaxis_title='Fiyat')
-    st.plotly_chart(fig_mc, use_container_width=True)
-    
-    best_case = simulation_df.iloc[-1].quantile(0.95)
-    worst_case = simulation_df.iloc[-1].quantile(0.05)
-    avg_case = mean_path.iloc[-1]
-    
-    m1, m2, m3 = st.columns(3)
-    m1.metric("En İyi Senaryo (95%)", f"{best_case:.2f}")
-    m2.metric("Ortalama Tahmin", f"{avg_case:.2f}")
-    m3.metric("En Kötü Senaryo (5%)", f"{worst_case:.2f}")
+            # Kolonları Formatla
+            def format_df(d):
+                d = d.copy()
+                d['Price'] = d['Price'].map('{:.2f}'.format)
+                d['Change %'] = d['Change %'].map('{:.2f}%'.format)
+                d['Volume'] = d['Volume'].map('{:,.0f}'.format)
+                return d
+            
+            col_gain, col_loss, col_vol = st.columns(3)
+            
+            with col_gain:
+                st.success("🚀 En Çok Yükselenler")
+                st.dataframe(format_df(top_gainers), hide_index=True, use_container_width=True)
+                
+            with col_loss:
+                st.error("🔻 En Çok Düşenler")
+                st.dataframe(format_df(top_losers), hide_index=True, use_container_width=True)
+                
+            with col_vol:
+                st.info("📊 Hacim Liderleri")
+                st.dataframe(format_df(top_volume), hide_index=True, use_container_width=True)
+        else:
+            st.warning("Veri alınamadı veya piyasa kapalı olabilir. Lütfen daha sonra tekrar deneyin.")
