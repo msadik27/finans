@@ -121,11 +121,45 @@ symbol_list = [
 ]
 symbol_list.sort()
 
-st.sidebar.markdown("### Hisse/Coin Seçimi")
-search_ticker = st.sidebar.selectbox("Listeden Seç:", symbol_list, index=symbol_list.index('BTC-USD') if 'BTC-USD' in symbol_list else 0)
-manual_ticker = st.sidebar.text_input("Veya Manuel Girin (Örn: AAPL):")
+# ---------------------------
+# SESSION STATE & SELECTOR CONFIG
+# ---------------------------
+if 'selected_symbol' not in st.session_state:
+    st.session_state.selected_symbol = 'BTC-USD'
 
-selected_ticker = manual_ticker.upper() if manual_ticker else search_ticker
+def update_ticker_from_select():
+    st.session_state.selected_symbol = st.session_state.ticker_select
+    # Manuel girişi temizle ki karışıklık olmasın
+    st.session_state.ticker_input = "" 
+
+def update_ticker_from_text():
+    if st.session_state.ticker_input:
+        st.session_state.selected_symbol = st.session_state.ticker_input.upper()
+
+st.sidebar.markdown("### Hisse/Coin Seçimi")
+
+# Listede varsa indexini bul, yoksa 0 (varsayılan)
+try:
+    sel_index = symbol_list.index(st.session_state.selected_symbol)
+except ValueError:
+    sel_index = 0
+
+search_ticker = st.sidebar.selectbox(
+    "Listeden Seç:", 
+    symbol_list, 
+    index=sel_index, 
+    key='ticker_select',
+    on_change=update_ticker_from_select
+)
+
+manual_ticker = st.sidebar.text_input(
+    "Veya Manuel Girin (Örn: AAPL):",
+    key='ticker_input',
+    on_change=update_ticker_from_text
+)
+
+# Seçili olanı session state'den al
+selected_ticker = st.session_state.selected_symbol
 
 # ---------------------------
 # PERİYOT SEÇİCİ
