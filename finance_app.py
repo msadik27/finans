@@ -38,16 +38,28 @@ if st.sidebar.button("🔄 Verileri Şimdi Güncelle"):
     st.cache_data.clear()
     st.rerun()
 
-# BIST 30 Hisseleri + BTC-USD
-bist_30 = [
-    'AKBNK.IS', 'ARCLK.IS', 'ASELS.IS', 'BIMAS.IS', 'EKGYO.IS', 'ENKAI.IS', 'EREGL.IS',
-    'FROTO.IS', 'GARAN.IS', 'GUBRF.IS', 'HEKTS.IS', 'ISCTR.IS', 'KCHOL.IS', 'KOZAA.IS',
-    'KOZAL.IS', 'KRDMD.IS', 'ODAS.IS', 'PETKM.IS', 'PGSUS.IS', 'SAHOL.IS', 'SASA.IS',
-    'SISE.IS', 'TAVHL.IS', 'TCELL.IS', 'THYAO.IS', 'TKFEN.IS', 'TOASO.IS', 'TSKB.IS',
-    'TTKOM.IS', 'TUPRS.IS', 'VESTL.IS', 'YKBNK.IS', 'BTC-USD'
+# Genişletilmiş Hisse Listesi (BIST 100 + Kripto + Döviz/Emtia)
+symbol_list = [
+    # BIST 100 Örneklem
+    'AEFES.IS', 'AGHOL.IS', 'AHGAZ.IS', 'AKBNK.IS', 'AKCNS.IS', 'AKFGY.IS', 'AKSA.IS', 'AKSEN.IS', 'ALARK.IS',
+    'ALBRK.IS', 'ALFAS.IS', 'ARCLK.IS', 'ASELS.IS', 'ASTOR.IS', 'BERA.IS', 'BIMAS.IS', 'BIOEN.IS', 'BRSAN.IS', 'BRYAT.IS',
+    'BUCIM.IS', 'CANTE.IS', 'CCOLA.IS', 'CEMTS.IS', 'CIMSA.IS', 'CWENE.IS', 'DOAS.IS', 'DOHOL.IS', 'ECILC.IS',
+    'EGEEN.IS', 'EKGYO.IS', 'ENJSA.IS', 'ENKAI.IS', 'EREGL.IS', 'EUPWR.IS', 'EUREN.IS', 'FROTO.IS', 'GARAN.IS',
+    'GENIL.IS', 'GESAN.IS', 'GLYHO.IS', 'GSDHO.IS', 'GUBRF.IS', 'GWIND.IS', 'HALKB.IS', 'HEKTS.IS', 'IPEKE.IS',
+    'ISCTR.IS', 'ISDMR.IS', 'ISGYO.IS', 'ISMEN.IS', 'IZENR.IS', 'KCAER.IS', 'KCHOL.IS', 'KONTR.IS', 'KONYA.IS',
+    'KOZAA.IS', 'KOZAL.IS', 'KRDMD.IS', 'KZBGY.IS', 'MAVI.IS', 'MGROS.IS', 'MIATK.IS', 'ODAS.IS', 'OTKAR.IS',
+    'OYAKC.IS', 'PENTA.IS', 'PETKM.IS', 'PGSUS.IS', 'PSGYO.IS', 'QUAGR.IS', 'SAHOL.IS', 'SASA.IS', 'SAYAS.IS',
+    'SDTTR.IS', 'SISE.IS', 'SKBNK.IS', 'SMRTG.IS', 'SOKM.IS', 'TAVHL.IS', 'TCELL.IS', 'THYAO.IS', 'TKFEN.IS',
+    'TOASO.IS', 'TSKB.IS', 'TTKOM.IS', 'TTRAK.IS', 'TUKAS.IS', 'TUPRS.IS', 'TURSG.IS', 'ULKER.IS', 'VAKBN.IS',
+    'VESBE.IS', 'VESTL.IS', 'YEOTK.IS', 'YKBNK.IS', 'YYLGD.IS', 'ZOREN.IS',
+    # Kripto
+    'BTC-USD', 'ETH-USD', 'SOL-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD', 'DOGE-USD', 'AVAX-USD',
+    # Döviz & Emtia
+    'USDTRY=X', 'EURTRY=X', 'GBPTRY=X', 'XAUUSD=X', 'XAGUSD=X', 'GC=F', 'CL=F'
 ]
+symbol_list.sort() # Alfabetik sıra
 
-selected_ticker = st.sidebar.selectbox("Hisse Seçin:", bist_30, index=len(bist_30)-1) # Default BTC-USD
+selected_ticker = st.sidebar.selectbox("Hisse/Coin Seçin:", symbol_list, index=symbol_list.index('BTC-USD') if 'BTC-USD' in symbol_list else 0)
 
 start_date = st.sidebar.date_input("Başlangıç Tarihi", datetime.now() - timedelta(days=365))
 end_date = st.sidebar.date_input("Bitiş Tarihi", datetime.now())
@@ -57,6 +69,11 @@ end_date = st.sidebar.date_input("Bitiş Tarihi", datetime.now())
 def get_data(ticker, start, end):
     try:
         df = yf.download(ticker, start=start, end=end, progress=False)
+        
+        # MultiIndex Düzeltmesi
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
         if df.empty:
             return None
         return df
@@ -96,7 +113,7 @@ with tab1:
     
     # Metrik Kartları
     last_price = df['Close'].iloc[-1]
-    if isinstance(last_price, pd.Series): # Handle potential multi-index or series issue
+    if isinstance(last_price, pd.Series): 
         last_price = last_price.iloc[0]
         
     prev_price = df['Close'].iloc[-2]
